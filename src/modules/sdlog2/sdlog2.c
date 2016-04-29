@@ -1172,7 +1172,7 @@ int sdlog2_thread_main(int argc, char *argv[])
 		struct ekf2_replay_s replay;
 		struct vehicle_land_detected_s land_detected;
 		struct commander_state_s commander_state;
-        struct cpuload_s cpuload;
+		struct cpuload_s cpuload;
 	} buf;
 
 	memset(&buf, 0, sizeof(buf));
@@ -1192,6 +1192,8 @@ int sdlog2_thread_main(int argc, char *argv[])
 			struct log_GPS_s log_GPS;
 			struct log_ATTC_s log_ATTC;
 			struct log_STAT_s log_STAT;
+			struct log_LOAD_s log_LOAD;
+			struct log_COMM_s log_COMM;
 			struct log_VTOL_s log_VTOL;
 			struct log_RC_s log_RC;
 			struct log_OUT_s log_OUT;
@@ -1280,7 +1282,7 @@ int sdlog2_thread_main(int argc, char *argv[])
 		int replay_sub;
 		int land_detected_sub;
 		int commander_state_sub;
-        int cpuload_sub;
+		int cpuload_sub;
 	} subs;
 
 	subs.cmd_sub = -1;
@@ -1322,7 +1324,7 @@ int sdlog2_thread_main(int argc, char *argv[])
 	subs.replay_sub = -1;
 	subs.land_detected_sub = -1;
 	subs.commander_state_sub = -1;
-    subs.cpuload_sub = -1;
+	subs.cpuload_sub = -1;
 
 	/* add new topics HERE */
 
@@ -1433,10 +1435,6 @@ int sdlog2_thread_main(int argc, char *argv[])
 		/* --- VEHICLE STATUS - LOG MANAGEMENT --- */
 		bool status_updated = copy_if_updated(ORB_ID(vehicle_status), &subs.status_sub, &buf_status);
 
-		/* --- COMMANDER INTERNAL STATE - LOG MANAGEMENT --- */
-		bool commander_state_updated = copy_if_updated(ORB_ID(commander_state), &subs.commander_state_sub,
-							       &buf.commander_state);
-
 		if (status_updated) {
 			if (log_when_armed) {
 				handle_status(&buf_status);
@@ -1460,19 +1458,31 @@ int sdlog2_thread_main(int argc, char *argv[])
 		log_msg.body.log_TIME.t = hrt_absolute_time();
 		LOGBUFFER_WRITE_AND_COUNT(TIME);
 
-        copy_if_updated(ORB_ID(cpuload), &subs.cpuload_sub, &buf.cpuload);
-
-		/* --- VEHICLE STATUS / COMMANDER DEBUGGING --- */
-		if (status_updated || commander_state_updated) {
+		/* --- VEHICLE STATUS --- */
+		if (status_updated) {
 			log_msg.msg_type = LOG_STAT_MSG;
-			// TODO: This field should get DEPRECATED in favor of nav_state. main_state is only for
-			// commander debugging.
-			log_msg.body.log_STAT.main_state = buf.commander_state.main_state;
 			log_msg.body.log_STAT.nav_state = buf_status.nav_state;
 			log_msg.body.log_STAT.arming_state = buf_status.arming_state;
 			log_msg.body.log_STAT.failsafe = (uint8_t) buf_status.failsafe;
-            log_msg.body.log_STAT.load = buf.cpuload.load;
 			LOGBUFFER_WRITE_AND_COUNT(STAT);
+		}
+
+		/* --- COMMANDER INTERNAL STATE --- */
+		bool commander_state_updated = copy_if_updated(ORB_ID(commander_state), &subs.commander_state_sub,
+							       &buf.commander_state);
+
+		if (commander_state_updated) {
+			log_msg.msg_type = LOG_COMM_MSG;
+			log_msg.body.log_COMM.main_state = buf.commander_state.main_state;
+			LOGBUFFER_WRITE_AND_COUNT(COMM);
+		}
+
+
+		bool cpuload_updated = copy_if_updated(ORB_ID(cpuload), &subs.cpuload_sub, &buf.cpuload);
+		if (cpuload_updated) {
+			log_msg.msg_type = LOG_LOAD_MSG;
+			log_msg.body.log_LOAD.cpu_load = buf.cpuload.load;
+			LOGBUFFER_WRITE_AND_COUNT(LOAD);
 		}
 
 		/* --- EKF2 REPLAY --- */
