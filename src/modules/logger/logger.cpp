@@ -389,7 +389,12 @@ void Logger::run()
 	add_topic("estimator_status");
 	add_topic("vehicle_status", 20);
 
-	_writer_thread = _writer.thread_start();
+	int ret = _writer.thread_start(_writer_thread);
+
+	if (ret) {
+		PX4_ERR("logger: failed to create writer thread (%i)", ret);
+		return;
+	}
 
 	_task_should_exit = false;
 
@@ -564,7 +569,7 @@ void Logger::run()
 	_writer.notify();
 
 	// wait for thread to complete
-	int ret = pthread_join(_writer_thread, NULL);
+	ret = pthread_join(_writer_thread, NULL);
 
 	if (ret) {
 		PX4_WARN("join failed: %d", ret);
