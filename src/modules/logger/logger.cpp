@@ -321,7 +321,7 @@ int Logger::add_topic(const char *name, unsigned interval = 0)
 		}
 	}
 
-	if ((fd > 0) && (interval != 0)) {
+	if (fd >= 0 && interval != 0) {
 		orb_set_interval(fd, interval);
 	}
 
