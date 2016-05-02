@@ -72,13 +72,12 @@ private:
 
 	bool copy_if_updated_multi(orb_id_t topic, int multi_instance, int *handle, void *buffer, uint64_t *time_last_checked);
 
-	static constexpr size_t 	MAX_TOPICS_NUM = 128;
+	static constexpr size_t 	MAX_TOPICS_NUM = 128; /**< Maximum number of logged topics */
 	static constexpr unsigned	MAX_NO_LOGFOLDER = 999;	/**< Maximum number of log dirs */
 	static constexpr unsigned	MAX_NO_LOGFILE = 999;	/**< Maximum number of log files */
 	static constexpr const char 		*LOG_ROOT = PX4_ROOTFSDIR"/fs/microsd/log";
 
 	bool						_task_should_exit = true;
-	uint8_t 					*_log_buffer;
 	char 						_log_dir[64];
 	uORB::Subscription<vehicle_status_s>	_vehicle_status_sub {ORB_ID(vehicle_status)};
 	bool						_enabled = false;
