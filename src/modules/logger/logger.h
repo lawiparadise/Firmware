@@ -6,6 +6,8 @@
 #include <drivers/drv_hrt.h>
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/vehicle_status.h>
+#include <version/version.h>
+#include <systemlib/git_version.h>
 
 extern "C" __EXPORT int logger_main(int argc, char *argv[]);
 
@@ -68,7 +70,13 @@ private:
 
 	void write_formats();
 
+	void write_version();
+
+	void write_info(const char *name, const char *value);
+
 	void write_parameters();
+
+	void write_changed_parameters();
 
 	bool copy_if_updated_multi(orb_id_t topic, int multi_instance, int *handle, void *buffer, uint64_t *time_last_checked);
 
@@ -80,6 +88,7 @@ private:
 	bool						_task_should_exit = true;
 	char 						_log_dir[64];
 	uORB::Subscription<vehicle_status_s>	_vehicle_status_sub {ORB_ID(vehicle_status)};
+	uORB::Subscription<parameter_update_s>	_parameter_update_sub {ORB_ID(parameter_update)};
 	bool						_enabled = false;
 	bool 						_log_on_start;
 	Array<LoggerSubscription, MAX_TOPICS_NUM>	_subscriptions;

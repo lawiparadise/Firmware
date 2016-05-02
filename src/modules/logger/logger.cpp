@@ -183,12 +183,24 @@ void Logger::run_trampoline(int argc, char *argv[])
 		return;
 	}
 
+#if defined(DBGPRINT) && defined(__PX4_NUTTX)
+	struct mallinfo alloc_info = mallinfo();
+	warnx("largest free chunk: %d bytes", alloc_info.mxordblk);
+	warnx("allocating %d bytes for log_buffer", log_buffer_size);
+#endif /* DBGPRINT */
+
 	logger_ptr = new Logger(log_buffer_size, log_interval, log_on_start);
 
-	if (logger_ptr == nullptr) {
-		PX4_WARN("alloc failed");
+	if (logger_ptr->_log_buffer == nullptr) {
+		PX4_WARN("log buffer malloc failed");
 
 	} else {
+
+#if defined(DBGPRINT) && defined(__PX4_NUTTX)
+		alloc_info = mallinfo();
+		warnx("remaining free heap: %d bytes", alloc_info.fordblks);
+#endif /* DBGPRINT */
+
 		logger_ptr->run();
 	}
 }
@@ -377,26 +389,27 @@ void Logger::run()
 		return;
 	}
 
-	add_topic("manual_control_setpoint", 10);
+	add_topic("sensor_gyro", 0);
+	add_topic("sensor_accel", 0);
 	add_topic("vehicle_rates_setpoint", 10);
 	add_topic("vehicle_attitude_setpoint", 10);
-	add_topic("vehicle_attitude", 10);
+	add_topic("vehicle_attitude", 0);
 	add_topic("actuator_outputs", 50);
 	add_topic("battery_status", 100);
 	add_topic("vehicle_command", 100);
 	add_topic("actuator_controls", 10);
-	add_topic("vehicle_local_position_setpoint", 30);
-	add_topic("rc_channels", 100);
-	add_topic("ekf2_innovations", 20);
+	add_topic("vehicle_local_position_setpoint", 200);
+	add_topic("rc_channels", 20);
+//	add_topic("ekf2_innovations", 20);
 	add_topic("commander_state", 100);
-	add_topic("vehicle_local_position", 10);
-	add_topic("vehicle_global_position", 10);
+	add_topic("vehicle_local_position", 200);
+	add_topic("vehicle_global_position", 200);
 	add_topic("system_power", 100);
-	add_topic("servorail_status", 100);
+	add_topic("servorail_status", 200);
 	add_topic("mc_att_ctrl_status", 50);
-	add_topic("control_state");
-	add_topic("estimator_status");
-	add_topic("vehicle_status", 20);
+//	add_topic("control_state");
+//	add_topic("estimator_status");
+	add_topic("vehicle_status", 200);
 
 	if (!_writer.init()) {
 		PX4_ERR("logger: init of writer failed");
@@ -458,6 +471,14 @@ void Logger::run()
 
 			bool data_written = false;
 
+			/* Check if parameters have changed */
+			// this needs to change to a timestamped record to record a history of parameter changes
+			if (_parameter_update_sub.check_updated()) {
+				warnx("parameter update");
+				_parameter_update_sub.update();
+				write_changed_parameters();
+			}
+
 			// Write data messages for normal subscriptions
 			int msg_id = 0;
 
@@ -490,8 +511,7 @@ void Logger::run()
 						 */
 						message_data_header_s *header = reinterpret_cast<message_data_header_s *>(buffer);
 						header->msg_type = static_cast<uint8_t>(MessageType::DATA);
-						/* the ORB topic data object has 2 unused trailing bytes? */
-						header->msg_size = static_cast<uint16_t>(msg_size - 2);
+						header->msg_size = static_cast<uint16_t>(msg_size - 3);
 						header->msg_id = msg_id;
 						header->multi_id = 0x80 + instance;	// Non multi, active
 
@@ -675,6 +695,7 @@ void Logger::start_log()
 	}
 
 	_writer.start_log(file_name);
+	write_version();
 	write_formats();
 	write_parameters();
 	_enabled = true;
@@ -697,7 +718,7 @@ void Logger::write_formats()
 		msg.msg_id = msg_id;
 		msg.format_len = snprintf(msg.format, sizeof(msg.format), "%s", sub.metadata->o_fields);
 		size_t msg_size = sizeof(msg) - sizeof(msg.format) + msg.format_len;
-		msg.msg_size = msg_size - 2;
+		msg.msg_size = msg_size - 3;
 
 		while (!_writer.write(&msg, msg_size)) {
 			_writer.unlock();
@@ -713,6 +734,44 @@ void Logger::write_formats()
 	_writer.notify();
 }
 
+/* write info message */
+void Logger::write_info(const char *name, const char *value)
+{
+	_writer.lock();
+	uint8_t buffer[sizeof(message_info_header_s)];
+	message_info_header_s *msg = reinterpret_cast<message_info_header_s *>(buffer);
+	msg->msg_type = static_cast<uint8_t>(MessageType::INFO);
+
+	/* construct format key (type and name) */
+	size_t vlen = strlen(value);
+	msg->key_len = snprintf(msg->key, sizeof(msg->key), "char[%zu] %s", vlen, name);
+	size_t msg_size = sizeof(*msg) - sizeof(msg->key) + msg->key_len;
+
+	/* copy string value directly to buffer */
+	if (vlen < (sizeof(*msg) - msg_size)) {
+		memcpy(&buffer[msg_size], value, vlen);
+		msg_size += vlen;
+
+		msg->msg_size = msg_size - 3;
+
+		/* write message */
+		while (!_writer.write(buffer, msg_size)) {
+			/* wait if buffer is full, don't skip INFO messages */
+			_writer.unlock();
+			_writer.notify();
+			usleep(_log_interval);
+			_writer.lock();
+		}
+	}
+}
+
+/* write version info messages */
+void Logger::write_version()
+{
+	write_info("ver_sw", PX4_GIT_VERSION_STR);
+	write_info("ver_hw", HW_ARCH);
+}
+
 void Logger::write_parameters()
 {
 	_writer.lock();
@@ -724,11 +783,13 @@ void Logger::write_parameters()
 	param_t param = 0;
 
 	do {
+		// get next parameter which is invalid OR used
 		do {
 			param = param_for_index(param_idx);
 			++param_idx;
 		} while (param != PARAM_INVALID && !param_used(param));
 
+		// save parameters which are valid AND used
 		if (param != PARAM_INVALID) {
 			/* get parameter type and size */
 			const char *type_str;
@@ -758,7 +819,74 @@ void Logger::write_parameters()
 			param_get(param, &buffer[msg_size]);
 			msg_size += value_size;
 
-			msg->msg_size = msg_size - 2;
+			msg->msg_size = msg_size - 3;
+
+			/* write message */
+			while (!_writer.write(buffer, msg_size)) {
+				/* wait if buffer is full, don't skip PARAMETER messages */
+				_writer.unlock();
+				_writer.notify();
+				usleep(_log_interval);
+				_writer.lock();
+			}
+		}
+	} while ((param != PARAM_INVALID) && (param_idx < (int) param_count()));
+
+	_writer.unlock();
+	_writer.notify();
+}
+
+void Logger::write_changed_parameters()
+{
+	_writer.lock();
+	uint8_t buffer[sizeof(message_parameter_header_s) + sizeof(param_value_u)];
+	message_parameter_header_s *msg = reinterpret_cast<message_parameter_header_s *>(buffer);
+
+	msg->msg_type = static_cast<uint8_t>(MessageType::PARAMETER);
+	int param_idx = 0;
+	param_t param = 0;
+
+	do {
+		// get next parameter which is invalid OR used
+		do {
+			param = param_for_index(param_idx);
+			++param_idx;
+		} while (param != PARAM_INVALID && !param_used(param));
+
+		// log parameters which are valid AND used AND unsaved
+		if ((param != PARAM_INVALID) && param_value_unsaved(param)) {
+			warnx("logging change to parameter %s", param_name(param));
+
+			/* get parameter type and size */
+			const char *type_str;
+			param_type_t type = param_type(param);
+			size_t value_size = 0;
+
+			switch (type) {
+			case PARAM_TYPE_INT32:
+				type_str = "int32_t";
+				value_size = sizeof(int32_t);
+				break;
+
+			case PARAM_TYPE_FLOAT:
+				type_str = "float";
+				value_size = sizeof(float);
+				break;
+
+			default:
+				continue;
+			}
+
+			/* format parameter key (type and name) */
+			msg->key_len = snprintf(msg->key, sizeof(msg->key), "%s %s ", type_str, param_name(param));
+			size_t msg_size = sizeof(*msg) - sizeof(msg->key) + msg->key_len;
+
+			/* copy parameter value directly to buffer */
+			param_get(param, &buffer[msg_size]);
+			msg_size += value_size;
+
+			/* msg_size is now 1 (msg_type) + 2 (msg_size) + 1 (key_len) + key_len + value_size */
+			msg->msg_size = msg_size - 3;
 
 			/* write message */
 			while (!_writer.write(buffer, msg_size)) {
